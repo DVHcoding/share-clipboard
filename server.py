@@ -47,13 +47,20 @@ class SleepWakeDetector:
             user32   = ctypes.windll.user32
             kernel32 = ctypes.windll.kernel32
 
+            # Dùng c_int64 cho HWND/WPARAM/LPARAM để tránh overflow trên Windows 64-bit
             WNDPROCTYPE = ctypes.WINFUNCTYPE(
-                ctypes.c_long,
-                ctypes.wintypes.HWND,
-                ctypes.wintypes.UINT,
-                ctypes.wintypes.WPARAM,
-                ctypes.wintypes.LPARAM,
+                ctypes.c_int64,   # return
+                ctypes.c_int64,   # HWND
+                ctypes.c_uint,    # MSG
+                ctypes.c_int64,   # WPARAM
+                ctypes.c_int64,   # LPARAM
             )
+
+            # Khai báo rõ argtypes/restype cho DefWindowProcW
+            user32.DefWindowProcW.restype  = ctypes.c_int64
+            user32.DefWindowProcW.argtypes = [
+                ctypes.c_int64, ctypes.c_uint, ctypes.c_int64, ctypes.c_int64
+            ]
 
             def wnd_proc(hwnd, msg, wparam, lparam):
                 if msg == self.WM_POWERBROADCAST:
