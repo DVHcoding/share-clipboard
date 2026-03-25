@@ -71,20 +71,19 @@ class SleepWakeDetector:
 
             hinstance = kernel32.GetModuleHandleW(None)
 
-            wc = ctypes.wintypes.WNDCLASS()   # type: ignore[attr-defined]  # noqa
-            # Dùng WNDCLASSW thủ công vì ctypes.wintypes không export sẵn
+            # Định nghĩa WNDCLASSW hoàn toàn thủ công, không dùng wintypes.WNDCLASS
             class WNDCLASSW(ctypes.Structure):
                 _fields_ = [
                     ("style",         ctypes.c_uint),
                     ("lpfnWndProc",   WNDPROCTYPE),
                     ("cbClsExtra",    ctypes.c_int),
                     ("cbWndExtra",    ctypes.c_int),
-                    ("hInstance",     ctypes.wintypes.HINSTANCE),
-                    ("hIcon",         ctypes.wintypes.HICON),
-                    ("hCursor",       ctypes.wintypes.HANDLE),
-                    ("hbrBackground", ctypes.wintypes.HBRUSH),
-                    ("lpszMenuName",  ctypes.wintypes.LPCWSTR),
-                    ("lpszClassName", ctypes.wintypes.LPCWSTR),
+                    ("hInstance",     ctypes.c_void_p),
+                    ("hIcon",         ctypes.c_void_p),
+                    ("hCursor",       ctypes.c_void_p),
+                    ("hbrBackground", ctypes.c_void_p),
+                    ("lpszMenuName",  ctypes.c_wchar_p),
+                    ("lpszClassName", ctypes.c_wchar_p),
                 ]
 
             wc2 = WNDCLASSW()
