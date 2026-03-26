@@ -21,17 +21,13 @@ log = logging.getLogger(__name__)
 
 
 # ================================================================
-#  Wake-up Detector — lắng nghe sự kiện Sleep/Resume của Windows
+#  Wake-up Detector
 # ================================================================
 class SleepWakeDetector:
-    """
-    Dùng Windows Message Queue để nhận WM_POWERBROADCAST.
-    PBT_APMRESUMEAUTOMATIC (0x12) = máy vừa wake từ sleep.
-    """
     WM_POWERBROADCAST      = 0x0218
-    PBT_APMSUSPEND         = 0x0004   # Máy chuẩn bị sleep
-    PBT_APMRESUMEAUTOMATIC = 0x0012   # Máy vừa wake (tự động)
-    PBT_APMRESUMESUSPEND   = 0x0007   # Máy vừa wake (do user)
+    PBT_APMSUSPEND         = 0x0004
+    PBT_APMRESUMEAUTOMATIC = 0x0012
+    PBT_APMRESUMESUSPEND   = 0x0007
 
     def __init__(self, on_sleep=None, on_wake=None):
         self.on_sleep = on_sleep
@@ -42,21 +38,14 @@ class SleepWakeDetector:
         self._thread.start()
 
     def _run(self):
-        """Tạo cửa sổ ẩn để nhận Windows messages"""
         try:
             user32   = ctypes.windll.user32
             kernel32 = ctypes.windll.kernel32
 
-            # Dùng c_int64 cho HWND/WPARAM/LPARAM để tránh overflow trên Windows 64-bit
             WNDPROCTYPE = ctypes.WINFUNCTYPE(
-                ctypes.c_int64,   # return
-                ctypes.c_int64,   # HWND
-                ctypes.c_uint,    # MSG
-                ctypes.c_int64,   # WPARAM
-                ctypes.c_int64,   # LPARAM
+                ctypes.c_int64, ctypes.c_int64, ctypes.c_uint,
+                ctypes.c_int64, ctypes.c_int64,
             )
-
-            # Khai báo rõ argtypes/restype cho DefWindowProcW
             user32.DefWindowProcW.restype  = ctypes.c_int64
             user32.DefWindowProcW.argtypes = [
                 ctypes.c_int64, ctypes.c_uint, ctypes.c_int64, ctypes.c_int64
@@ -75,10 +64,8 @@ class SleepWakeDetector:
                 return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
             wnd_proc_ptr = WNDPROCTYPE(wnd_proc)
-
             hinstance = kernel32.GetModuleHandleW(None)
 
-            # Định nghĩa WNDCLASSW hoàn toàn thủ công, không dùng wintypes.WNDCLASS
             class WNDCLASSW(ctypes.Structure):
                 _fields_ = [
                     ("style",         ctypes.c_uint),
@@ -99,15 +86,12 @@ class SleepWakeDetector:
             wc2.lpszClassName = "ClipboardSyncWatcher"
 
             user32.RegisterClassW(ctypes.byref(wc2))
-
-            hwnd = user32.CreateWindowExW(
+            user32.CreateWindowExW(
                 0, "ClipboardSyncWatcher", "ClipboardSyncWatcher",
                 0, 0, 0, 0, 0, None, None, hinstance, None
             )
-
             log.info("🔋 Sleep/Wake detector đang chạy...")
 
-            # Message loop
             msg_struct = ctypes.wintypes.MSG()
             while True:
                 bret = user32.GetMessageW(ctypes.byref(msg_struct), None, 0, 0)
@@ -132,13 +116,10 @@ class ClipboardServer:
         self.client_socket  = None
         self.running        = False
         self.last_clipboard = ""
-        self.connection_lock   = threading.Lock()
-        self.connected_event   = threading.Event()
-        self._force_restart    = threading.Event()  # kích hoạt khi wake up
+        self.connection_lock = threading.Lock()
+        self.connected_event = threading.Event()
+        self._force_restart  = threading.Event()
 
-    # ----------------------------------------------------------
-    # Khởi động
-    # ----------------------------------------------------------
     def start(self):
         self.running = True
         log.info("=" * 50)
@@ -146,20 +127,9 @@ class ClipboardServer:
         log.info("=" * 50)
         log.info(f"Listening on {self.host}:{self.port}")
 
-        # Wake/Sleep detector
-        detector = SleepWakeDetector(
-            on_sleep=self._on_sleep,
-            on_wake=self._on_wake,
-        )
-        detector.start()
-
-        # Fallback: heartbeat tự phát hiện wake nếu detector không hoạt động
+        SleepWakeDetector(on_sleep=self._on_sleep, on_wake=self._on_wake).start()
         threading.Thread(target=self._heartbeat_watchdog, daemon=True).start()
-
-        # Thread chính quản lý kết nối
         threading.Thread(target=self._connection_manager, daemon=True).start()
-
-        # Thread gửi/nhận clipboard
         threading.Thread(target=self.monitor_clipboard, daemon=True).start()
         threading.Thread(target=self.receive_clipboard, daemon=True).start()
 
@@ -171,40 +141,30 @@ class ClipboardServer:
             self.stop()
 
     # ----------------------------------------------------------
-    # Sleep / Wake callbacks
+    # Sleep / Wake
     # ----------------------------------------------------------
     def _on_sleep(self):
-        log.info("💤 Xử lý sleep: đóng socket hiện tại...")
+        log.info("💤 Xử lý sleep: đóng socket...")
         with self.connection_lock:
             self._close_client()
             self._close_server_socket()
         self.connected_event.clear()
 
     def _on_wake(self):
-        """Đợi network ổn định rồi force-restart connection manager"""
         log.info("☀️  Wake up — đợi network ổn định (3s)...")
         time.sleep(3)
         log.info("🔄 Khởi động lại server socket...")
-        self._force_restart.set()   # Báo cho connection manager biết
+        self._force_restart.set()
 
-    # ----------------------------------------------------------
-    # Fallback watchdog: phát hiện wake qua khoảng trống thời gian
-    # ----------------------------------------------------------
     def _heartbeat_watchdog(self):
-        """
-        Nếu 2 lần check cách nhau > 15s (máy đã sleep ở giữa),
-        coi như vừa wake up → force restart.
-        """
-        INTERVAL = 5        # giây giữa mỗi lần check
-        MAX_SKIP = 15       # nếu gap > 15s → đã sleep
+        INTERVAL = 5
+        MAX_SKIP = 15
         last_tick = time.time()
-
         while self.running:
             time.sleep(INTERVAL)
-            now  = time.time()
-            gap  = now - last_tick
+            now = time.time()
+            gap = now - last_tick
             last_tick = now
-
             if gap > MAX_SKIP:
                 log.info(f"⏰ Watchdog phát hiện gap {gap:.1f}s → máy vừa wake!")
                 self._on_wake()
@@ -216,17 +176,14 @@ class ClipboardServer:
         while self.running:
             self._force_restart.clear()
 
-            # --- Tạo server socket mới ---
             if not self._bind_server():
                 time.sleep(3)
                 continue
 
-            # --- Chờ client kết nối ---
             log.info("⏳ Đợi client kết nối...")
             client_socket, addr = self._accept_client()
 
             if client_socket is None:
-                # Bị interrupt bởi _force_restart hoặc lỗi
                 self._close_server_socket()
                 if self._force_restart.is_set():
                     log.info("🔄 Force restart do wake up...")
@@ -238,18 +195,16 @@ class ClipboardServer:
             log.info(f"✅ Client kết nối từ {addr}")
             self.connected_event.set()
 
-            # --- Giữ kết nối, phát hiện ngắt ---
-            self._keep_alive()
+            # Chờ đến khi client disconnect
+            self._wait_for_disconnect()
 
-            # --- Mất kết nối ---
-            log.info("⚠️  Mất kết nối — chuẩn bị reconnect...")
+            log.info("⚠️  Client đã ngắt kết nối — chuẩn bị nhận client mới...")
             with self.connection_lock:
                 self._close_client()
             self.connected_event.clear()
             self._close_server_socket()
 
     def _bind_server(self):
-        """Bind server socket, thử nhiều lần nếu cổng còn bận"""
         for attempt in range(1, 6):
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -266,7 +221,6 @@ class ClipboardServer:
         return False
 
     def _accept_client(self):
-        """Accept với timeout để có thể bị interrupt bởi _force_restart"""
         while self.running and not self._force_restart.is_set():
             try:
                 client_socket, addr = self.server_socket.accept()
@@ -280,20 +234,38 @@ class ClipboardServer:
                 return None, None
         return None, None
 
-    def _keep_alive(self):
-        """Gửi heartbeat để phát hiện mất kết nối"""
+    def _wait_for_disconnect(self):
+        """
+        Dùng MSG_PEEK để phát hiện client đóng kết nối mà không
+        lấy mất data (receive_clipboard sẽ xử lý data thật).
+        recv() trả về b"" = client đã đóng kết nối.
+        """
+        with self.connection_lock:
+            sock = self.client_socket
+        if not sock:
+            return
+
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        except Exception:
+            pass
+
+        sock.settimeout(2.0)
+
         while self.running and not self._force_restart.is_set():
             try:
-                with self.connection_lock:
-                    sock = self.client_socket
-                if sock:
-                    sock.sendall(b"")
-                time.sleep(5)
+                data = sock.recv(1, socket.MSG_PEEK)
+                if data == b"":
+                    log.info("⚠️  Detect disconnect (MSG_PEEK)")
+                    break
+                time.sleep(0.5)
+            except socket.timeout:
+                continue
             except Exception:
                 break
 
     # ----------------------------------------------------------
-    # Monitor clipboard (gửi đến client)
+    # Monitor clipboard
     # ----------------------------------------------------------
     def monitor_clipboard(self):
         log.info("👁️  Theo dõi clipboard...")
@@ -313,15 +285,16 @@ class ClipboardServer:
         try:
             with self.connection_lock:
                 sock = self.client_socket
-            if sock:
+            if sock and self.connected_event.is_set():
                 payload = json.dumps({"text": text}) + "\n"
                 sock.sendall(payload.encode("utf-8"))
                 log.info(f"📤 Gửi: {text[:60]}{'...' if len(text) > 60 else ''}")
         except Exception as e:
             log.error(f"Gửi lỗi: {e}")
+            self.connected_event.clear()
 
     # ----------------------------------------------------------
-    # Receive clipboard (nhận từ client)
+    # Receive clipboard
     # ----------------------------------------------------------
     def receive_clipboard(self):
         log.info("📥 Sẵn sàng nhận dữ liệu...")
@@ -346,6 +319,8 @@ class ClipboardServer:
                         continue
 
                     if not chunk:
+                        log.info("⚠️  receive_clipboard: client ngắt kết nối")
+                        self.connected_event.clear()
                         break
 
                     buffer += chunk
@@ -364,8 +339,14 @@ class ClipboardServer:
                                 pass
 
             except Exception as e:
-                if self.running:
+                # WinError 10053/10054 = OS hủy socket khi tắt/restart máy → bình thường
+                err_str = str(e)
+                expected = ("10053", "10054", "10061", "forcibly closed", "aborted")
+                if self.running and not any(code in err_str for code in expected):
                     log.error(f"Nhận lỗi: {e}")
+                else:
+                    log.info(f"🔌 Kết nối đóng do shutdown/restart — sẽ reconnect...")
+                self.connected_event.clear()
 
     # ----------------------------------------------------------
     # Helpers
